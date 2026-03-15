@@ -4,67 +4,45 @@ warnings.filterwarnings('ignore')
 import speech_recognition as sr
 import threading
 from datetime import datetime
-import librosa
-import numpy as np
-from scipy.spatial.distance import cosine
+import re
 
 class AudioWhatCounter:
     def __init__(self):
         self.recognizer = sr.Recognizer()
-        self.similarity_count = 0
+        self.what_count = 0
         self.running = False
         self.lock = threading.Lock()
         self.session_start = datetime.now()
-        self.similarity_matches = []
+        self.matches_found = []
         
         # Adjust recognizer settings for better performance
         self.recognizer.energy_threshold = 4000
         self.recognizer.dynamic_energy_threshold = True
         self.recognizer.pause_threshold = 0.8
         
-        # Load reference audio
-        self.reference_features = None
-        self.load_reference_audio("what.m4a")
+        print("✅ Text-based 'what' detector initialized")
     
-    def load_reference_audio(self, audio_path):
-        """Load and extract features from reference audio file"""
-        try:
-            # Load the audio file
-            y, sr_rate = librosa.load(audio_path, sr=None)
-            
-            # Extract MFCC features (Mel-frequency cepstral coefficients)
-            mfcc = librosa.feature.mfcc(y=y, sr=sr_rate, n_mfcc=13)
-            
-            # Calculate mean of the features
-            self.reference_features = np.mean(mfcc, axis=1)
-                        
-        except Exception as e:
-            print(f"❌ Could not load reference audio: {e}")
-            print(f"   Make sure 'what.m4a' exists in the current directory")
-            raise
-    
-    def calculate_audio_similarity(self, audio_data):
-        """Compare audio features to reference audio"""
-        if self.reference_features is None:
-            return None
+    def detect_what_variations(self, text):
+        """
+        Detect variations of 'what' in transcribed text
+        Matches: what, whaat, whaaaat, whaaat, whattt, what's, etc.
+        """
+        # Pattern to match: wh + a(s with length >= 1) + t(s)
+        pattern = r'\bwha+t+s?\b'
         
+        matches = re.findall(pattern, text.lower())
+        
+        return matches
+    
+    def transcribe_audio(self, audio_data):
+        """Transcribe audio to text"""
         try:
-            # Convert audio data to numpy array
-            audio_array = np.frombuffer(audio_data.get_raw_data(), dtype=np.int16).astype(np.float32)
-            
-            # Normalize
-            audio_array = audio_array / 32768.0
-            
-            # Extract MFCC features
-            mfcc = librosa.feature.mfcc(y=audio_array, sr=audio_data.sample_rate, n_mfcc=13)
-            current_features = np.mean(mfcc, axis=1)
-            
-            # Calculate cosine distance (0 = identical, 1 = completely different)
-            similarity = 1 - cosine(self.reference_features, current_features)
-            
-            return similarity
-            
-        except Exception as e:
+            text = self.recognizer.recognize_google(audio_data)
+            return text
+        except sr.UnknownValueError:
+            return None
+        except sr.RequestError as e:
+            print(f"❌ API Error: {e}")
             return None
     
     def listen_and_process(self):
@@ -85,18 +63,33 @@ class AudioWhatCounter:
                     )
                     print(" ✓ Got audio!", flush=True)
                     
-                    # Check audio similarity to reference
-                    similarity_score = self.calculate_audio_similarity(audio)
+                    # Transcribe audio
+                    transcribed_text = self.transcribe_audio(audio)
                     
-                    if similarity_score is not None and similarity_score >= 0.90:
-                        with self.lock:
-                            self.similarity_count += 1
-                            self.similarity_matches.append({
-                                'timestamp': datetime.now()
-                            })
-                        print(f"✅ What Identified! | Total: {self.similarity_count}\n")
+                    if transcribed_text:
+                        print(f"   📝 Transcribed: {transcribed_text}")
+                        
+                        # Detect 'what' variations in text
+                        what_matches = self.detect_what_variations(transcribed_text)
+                        
+                        if what_matches:
+                            with self.lock:
+                                self.what_count += len(what_matches)
+                                for match in what_matches:
+                                    self.matches_found.append({
+                                        'word': match,
+                                        'timestamp': datetime.now(),
+                                        'full_text': transcribed_text
+                                    })
+                            
+                            # Format matches without backslash in f-string
+                            matches_str = ', '.join([f'"{w}"' for w in what_matches])
+                            print(f"   ✅ MATCH! Found: {matches_str}")
+                            print(f"   📊 Total 'what' count: {self.what_count}\n")
+                        else:
+                            print(f"   ⚠️  No 'what' detected\n")
                     else:
-                        print("⚠️  No match\n")
+                        print("   ⚠️  Could not transcribe audio\n")
                         
                 except sr.WaitTimeoutError:
                     print(" ⏱️ (timeout)", flush=True)
@@ -115,18 +108,29 @@ class AudioWhatCounter:
         # Main thread for user interaction
         try:
             while self.running:
-                user_input = input("(Commands: 'status', 'reset', 'quit'): ").lower().strip()
+                user_input = input("(Commands: 'status', 'matches', 'reset', 'quit'): ").lower().strip()
                 
                 if user_input == 'status':
                     elapsed = datetime.now() - self.session_start
                     print(f"\n📊 Status:")
-                    print(f"   Total matches: {self.similarity_count}")
+                    print(f"   Total 'what' count: {self.what_count}")
                     print(f"   Session time: {elapsed}\n")
+                    
+                elif user_input == 'matches':
+                    with self.lock:
+                        if self.matches_found:
+                            print(f"\n📋 All Detected 'What' Variations:")
+                            for i, match in enumerate(self.matches_found, 1):
+                                print(f"   {i}. \"{match['word']}\" - at {match['timestamp'].strftime('%H:%M:%S')}")
+                                print(f"      Full sentence: {match['full_text']}")
+                        else:
+                            print("\n📋 No 'what' matches found yet")
+                    print()
                     
                 elif user_input == 'reset':
                     with self.lock:
-                        self.similarity_count = 0
-                        self.similarity_matches.clear()
+                        self.what_count = 0
+                        self.matches_found.clear()
                         self.session_start = datetime.now()
                     print("🔄 Counter reset!\n")
                     
@@ -144,14 +148,17 @@ class AudioWhatCounter:
         with self.lock:
             elapsed = datetime.now() - self.session_start
             return {
-                'total_matches': self.similarity_count,
-                'session_duration': elapsed
+                'total_count': self.what_count,
+                'session_duration': elapsed,
+                'matches': self.matches_found
             }
 
 
 def main():
-    print("🎙️  What Counter - Audio Listener")
-    print("=" * 40)
+    print("🎙️  What Counter - Text-Based Audio Listener")
+    print("=" * 50)
+    print("Detects 'what' variations from speech-to-text")
+    print("=" * 50 + "\n")
     
     counter = AudioWhatCounter()
     
@@ -159,10 +166,22 @@ def main():
         counter.start()
     finally:
         stats = counter.get_stats()
-        print("\n" + "=" * 40)
-        print(f"📈 Final Count: {stats['total_matches']}")
+        print("\n" + "=" * 50)
+        print(f"📈 Final Report:")
+        print(f"   Total 'what' count: {stats['total_count']}")
         print(f"   Session duration: {stats['session_duration']}")
-        print("=" * 40)
+        
+        if stats['matches']:
+            print(f"\n   'What' variations found:")
+            variation_counts = {}
+            for match in stats['matches']:
+                word = match['word']
+                variation_counts[word] = variation_counts.get(word, 0) + 1
+            
+            for variation, count in sorted(variation_counts.items(), key=lambda x: x[1], reverse=True):
+                print(f"      '{variation}': {count}x")
+        
+        print("=" * 50)
 
 
 if __name__ == "__main__":

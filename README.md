@@ -1,6 +1,6 @@
 # 🎙️ What Counter - Audio Listener
 
-A Python application that listens to live audio and counts instances of spoken words that sound similar to a reference audio file (>90% acoustic similarity).
+A Python application that listens to live audio and counts instances of spoken words that sound similar to a reference text.
 
 ## Overview
 
